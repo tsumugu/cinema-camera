@@ -2,7 +2,7 @@
 
 対象実機は **moto g66j 5G**。撮影後の編集操作を必要とせず、「明暗2・粒子G1」を基準に、実写のフィードバックで青みを抑え、フィルター効果を調整できる方向を自動適用し、JPEGを保存するための初期実装です。
 
-**現在のバージョンは0.6.0（Android 15向け、デバッグ署名）です。** 取得済みの写真を端末内に永続保管し、JobSchedulerによるバックグラウンド保存・再試行・再起動後の復旧を追加しました。露出表示の回転、フィルター調整と保存も引き続き使えます。現像中の撮影、端末の向きに従う保存、保存フォルダを開くサムネイルボタンも引き続き使えます。フラッシュ、グリッド、水平器、連写、タップフォーカス、上下ドラッグの露出調整は引き続き使えます。この版はユーザーの指定によりテスト・動作検証を省略しています。0.1.0の検証記録は`docs/validation.md`に残しています。
+**現在のバージョンは0.6.1（Android 15向け、デバッグ署名）です。** 取得済みの写真を端末内に永続保管し、JobSchedulerによるバックグラウンド保存・再試行・再起動後の復旧を追加しました。露出表示の回転、フィルター調整と保存も引き続き使えます。現像中の撮影、端末の向きに従う保存、保存フォルダを開くサムネイルボタンも引き続き使えます。フラッシュ、グリッド、水平器、連写、タップフォーカス、上下ドラッグの露出調整は引き続き使えます。この版はユーザーの指定によりテスト・動作検証を省略しています。0.1.0の検証記録は`docs/validation.md`に残しています。
 
 ## RAWを基本にする処理
 
@@ -75,7 +75,7 @@ Windowsでは`gradlew.bat :app:assembleDebug :app:lintDebug`を使用します�
 
 同梱ランチャーは通常のWrapper JARの代わりとなる小さなブートストラップです。Gradle 8.13を公式配布元から取得し、公開されたSHA256で検証して`.toolchain`に展開します。依存ライブラリの初回取得には通信が必要です。
 
-APKは`app/build/outputs/apk/debug/app-debug.apk`です。配布用コピーはワークスペース直下の`cinema-camera-android15-v0.6.0-debug.apk`です。これはデバッグ用で、Playストア公開用の署名や設定は含みません。初回ビルド時にプロジェクト内の`.toolchain/debug.keystore`を作成します。同じ端末へ更新インストールするため、このキーは再作成せず保持してください。
+APKは`app/build/outputs/apk/debug/app-debug.apk`です。配布用コピーはワークスペース直下の`cinema-camera-android15-v0.6.1-debug.apk`です。これはデバッグ用で、Playストア公開用の署名や設定は含みません。初回ビルド時にプロジェクト内の`.toolchain/debug.keystore`を作成します。同じ端末へ更新インストールするため、このキーは再作成せず保持してください。
 
 ## 0.1.0で実行した検証
 
@@ -117,6 +117,10 @@ JDK、Python標準ライブラリ、サーフェスレスEGL/GLESが利用でき
 - [AtomicFile](https://developer.android.com/reference/android/util/AtomicFile)
 - [Motorolaのmoto g66j 5G仕様](https://jp-jp.support.motorola.com/app/answers/detail/a_id/192473/)
 
-## この環境での0.6.0 APK生成
+## この環境での0.6.1 APK生成
 
 Gradleが要求するローカルソケットの権限待ちを避け、既存の依存ライブラリ・リソースキャッシュとSDKを用いて`python tools/build-cached-apk.py`で生成しました。Javaコンパイル→D8→AAPT2→ZIP整列→既存デバッグキーでの署名を行います。この補助スクリプトには先行するGradleビルドのキャッシュが必要です。通常の環境では上記Gradleコマンドを使用できます。テスト・lint・実機動作検証はこの版では実施していません。
+
+## ライセンス
+
+本プロジェクトは [MIT License](LICENSE) で公開しています。依存ライブラリの告知は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、確認結果は [docs/license-audit.md](docs/license-audit.md) を参照してください。ライセンス文・告知はAPKの `assets/licenses/` にも同梱しています。

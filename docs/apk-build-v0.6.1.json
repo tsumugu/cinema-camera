@@ -1,0 +1,18 @@
+{
+  "versionCode": 7,
+  "versionName": "0.6.1",
+  "minSdk": 29,
+  "targetSdk": 35,
+  "artifact": "cinema-camera-android15-v0.6.1-debug.apk",
+  "bytes": 3637066,
+  "sha256": "17ce89ed846accdd04571ebff382e47960c10ef77bb319adadfd4d7851941c37",
+  "licenseFilesVerified": [
+    "assets/licenses/Apache-2.0.txt",
+    "assets/licenses/dependencies.json",
+    "assets/licenses/libyuv-LICENSE.txt",
+    "assets/licenses/MIT.txt",
+    "assets/licenses/Jakarta-NOTICE.md"
+  ],
+  "testsRun": false,
+  "deviceVerified": false
+}
