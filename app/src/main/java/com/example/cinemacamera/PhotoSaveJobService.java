@@ -65,13 +65,15 @@ public final class PhotoSaveJobService extends JobService {
             PendingPhotoStore.saved(this,id,previous.uri); PendingPhotoStore.remove(this,id); return;
         }
         Bitmap rendered=null; PhotoRenderer renderer=new PhotoRenderer(getApplicationContext());
+        String source="JPEG"; float nearSaturated=-1;
         try {
             if(PendingPhotoStore.hasRaw(this,id)) {
                 try {
                     RawDeveloper.Input raw=PendingPhotoStore.raw(this,id);
                     LinearPhoto linear=RawDeveloper.develop(raw,2560);
+                    nearSaturated=linear.nearSaturatedFraction;
                     if(task.stopped()) throw new InterruptedException();
-                    rendered=renderer.render(linear,record.look);
+                    rendered=renderer.render(linear,record.look); source="RAW";
                 } catch(Exception|OutOfMemoryError rawError) {
                     if(task.stopped()) throw new InterruptedException();
                     Log.w("CinemaCamera","Use persisted JPEG fallback",rawError);
@@ -84,7 +86,11 @@ public final class PhotoSaveJobService extends JobService {
                 rendered=renderer.render(jpeg,record.look);
             }
             if(task.stopped()) throw new InterruptedException();
-            Uri uri=PhotoStore.publish(getContentResolver(),record,rendered,task::stopped);
+            String software="Cinema Camera "+getPackageManager().getPackageInfo(getPackageName(),0).versionName;
+            org.json.JSONObject diagnostics=new org.json.JSONObject().put("source",source).put("colorPipeline","highlight-v2")
+                .put("rawNearSaturatedFraction",nearSaturated>=0?(Object)(double)nearSaturated:org.json.JSONObject.NULL)
+                .put("look",record.json.getJSONObject("look"));
+            Uri uri=PhotoStore.publish(getContentResolver(),record,rendered,task::stopped,software,diagnostics.toString());
             // Journal fsync precedes deleting either original. A process death
             // between publication and this write is handled by stable-name lookup.
             PendingPhotoStore.saved(this,id,uri); PendingPhotoStore.remove(this,id);

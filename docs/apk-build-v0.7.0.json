@@ -1,0 +1,12 @@
+{
+  "versionCode": 8,
+  "versionName": "0.7.0",
+  "minSdk": 29,
+  "targetSdk": 35,
+  "artifact": "cinema-camera-android15-v0.7.0-debug.apk",
+  "bytes": 3637066,
+  "sha256": "14d3b5b3c23d130b004cdabb304f181f1883e55141a6a4106db6e1f1483ec7fa",
+  "change": "RAW near-saturation neutral rolloff, joint RGB gamut mapping and JPEG EXIF pipeline provenance",
+  "testsRun": false,
+  "deviceVerified": false
+}

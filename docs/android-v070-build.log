@@ -1,0 +1,10 @@
+Building: java
+warning: [options] system modules path not set in conjunction with -source 17
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+1 warning
+Building: java
+Building: aapt2
+Building: zipalign
+Building: java
+APK: /workspace/cinema-camera-android15-v0.7.0-debug.apk bytes: 3637066

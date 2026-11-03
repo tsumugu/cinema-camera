@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
+import androidx.exifinterface.media.ExifInterface;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -47,7 +48,8 @@ final class PhotoStore {
         return null;
     }
     /** Stable filename and pending-row reuse make retries safe across crashes. */
-    static Uri publish(ContentResolver resolver,PendingPhotoStore.Record record,Bitmap photo,BooleanSupplier stopped) throws IOException {
+    static Uri publish(ContentResolver resolver,PendingPhotoStore.Record record,Bitmap photo,BooleanSupplier stopped,
+            String software,String diagnostics) throws IOException {
         Existing previous=existing(resolver,record);
         if(previous!=null&&previous.published) return previous.uri;
         if(stopped.getAsBoolean()) throw new IOException("Save stopped before publication");
@@ -67,7 +69,13 @@ final class PhotoStore {
         if(descriptor==null) throw new IOException("Could not open photo");
         try(ParcelFileDescriptor.AutoCloseOutputStream stream=new ParcelFileDescriptor.AutoCloseOutputStream(descriptor)) {
             if(!photo.compress(Bitmap.CompressFormat.JPEG,95,stream)) throw new IOException("Could not encode photo");
-            stream.flush(); stream.getFD().sync();
+            stream.flush(); stream.getChannel().position(0);
+            ExifInterface exif=new ExifInterface(stream.getFD());
+            exif.setAttribute(ExifInterface.TAG_SOFTWARE,software);
+            exif.setAttribute(ExifInterface.TAG_USER_COMMENT,diagnostics);
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION,Integer.toString(ExifInterface.ORIENTATION_NORMAL));
+            exif.saveAttributes();
+            stream.getFD().sync();
         }
         if(stopped.getAsBoolean()) throw new IOException("Save stopped before publication");
         ContentValues published=new ContentValues(); published.put(MediaStore.Images.Media.IS_PENDING,0);

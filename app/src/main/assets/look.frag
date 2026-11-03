@@ -16,6 +16,23 @@ uniform float uLinearInput;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 const float CONTRAST_POWER = 1.48;
 
+// Fit RGB with one common chroma scale around luminance. Independent channel
+// clipping changes hue (especially highlights); this keeps a single hue vector.
+vec3 fitDisplayGamut(vec3 rgb) {
+    float y=dot(rgb,LUMA);
+    if(y<=0.0) return vec3(0.0);
+    if(y>=1.0) return vec3(1.0);
+    vec3 delta=rgb-vec3(y);
+    vec3 positive=max(delta,vec3(0.000001));
+    vec3 negative=max(-delta,vec3(0.000001));
+    vec3 roomAbove=vec3(1.0-y)/positive;
+    vec3 roomBelow=vec3(y)/negative;
+    float scale=min(1.0,min(min(roomAbove.r,roomAbove.g),roomAbove.b));
+    scale=min(scale,min(min(roomBelow.r,roomBelow.g),roomBelow.b));
+    // This clamp only contains floating-point roundoff after the common scale.
+    return clamp(vec3(y)+delta*max(scale,0.0),0.0,1.0);
+}
+
 float tone(float x) {
     float a = pow(max(x, 0.0), CONTRAST_POWER);
     float b = pow(max(1.0 - x, 0.0), CONTRAST_POWER);
@@ -46,7 +63,7 @@ vec3 grade(vec3 rgb) {
     float weight = smoothstep(0.0, 0.04, y)
         * (1.0 - smoothstep(0.92, 1.0, y));
     c += vec3(noise * uGrainAmount * weight);
-    return clamp(c, 0.0, 1.0);
+    return fitDisplayGamut(c);
 }
 
 float encodeSrgb(float value) {
@@ -55,15 +72,14 @@ float encodeSrgb(float value) {
 }
 
 vec3 developBase(vec3 linearRgb) {
-    vec3 c = max(linearRgb, vec3(0.0));
-    float y = dot(c, LUMA);
-    // Gentle highlight shoulder, applied while RAW-derived RGB is still float.
-    // This is an initial base rendering, not Motorola's vendor tone curve.
-    if (y > 0.65) {
-        float mapped = 0.65 + 0.35 * (1.0 - exp(-(y - 0.65) / 0.35));
-        c *= mapped / y;
-    }
-    return vec3(encodeSrgb(c.r), encodeSrgb(c.g), encodeSrgb(c.b));
+    float y=dot(linearRgb,LUMA);
+    if(y<=0.000001) return vec3(0.0);
+    // Tone-map linear luminance, then fit all three channels jointly before
+    // sRGB encoding. No channel is clipped while another retains headroom.
+    float mapped=y;
+    if(y>0.65) mapped=0.65+0.35*(1.0-exp(-(y-0.65)/0.35));
+    vec3 c=fitDisplayGamut(linearRgb*(mapped/y));
+    return vec3(encodeSrgb(c.r),encodeSrgb(c.g),encodeSrgb(c.b));
 }
 
 void main() {

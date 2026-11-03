@@ -45,6 +45,7 @@ public final class RawDeveloper {
         FloatBuffer output=ByteBuffer.allocateDirect(outputWidth*outputHeight*16)
             .order(ByteOrder.nativeOrder()).asFloatBuffer();
         long deadline=System.nanoTime()+12_000_000_000L;
+        int nearSaturatedCells=0;
         for(int oy=0;oy<height;oy++) {
             if(Thread.currentThread().isInterrupted()||System.nanoTime()>deadline)
                 throw new IllegalStateException("RAW development timed out");
@@ -52,6 +53,7 @@ public final class RawDeveloper {
             for(int ox=0;ox<width;ox++) {
                 int sx=in.left+2*(int)((long)ox*nativeWidth/width);
                 float r=0,g=0,b=0;
+                float maximumSensor=0,neutralLimit=Float.POSITIVE_INFINITY;
                 for(int dy=0;dy<2;dy++) for(int dx=0;dx<2;dx++) {
                     int x=sx+dx,y=sy+dy;
                     int sensorX=x+in.originX,sensorY=y+in.originY;
@@ -60,7 +62,10 @@ public final class RawDeveloper {
                     float black=in.black[phase];
                     int code=data.getShort(base+y*in.rowStride+x*in.pixelStride)&0xffff;
                     float value=Math.max(0f,Math.min(1f,(code-black)/(in.white-black)));
-                    value*=in.gains[channel]*shade(in,channel,x,y)*in.exposureBoost;
+                    maximumSensor=Math.max(maximumSensor,value);
+                    float correction=in.gains[channel]*shade(in,channel,x,y)*in.exposureBoost;
+                    neutralLimit=Math.min(neutralLimit,correction);
+                    value*=correction;
                     if(channel==0) r=value;
                     else if(channel==3) b=value;
                     else g+=value*.5f;
@@ -68,6 +73,18 @@ public final class RawDeveloper {
                 float red=in.matrix[0]*r+in.matrix[1]*g+in.matrix[2]*b;
                 float green=in.matrix[3]*r+in.matrix[4]*g+in.matrix[5]*b;
                 float blue=in.matrix[6]*r+in.matrix[7]*g+in.matrix[8]*b;
+                if(maximumSensor>=.995f) nearSaturatedCells++;
+                // Once sensor channels clip, WB cannot recover their ratios.
+                // Only roll near-white, clipped cells toward neutral; a bright
+                // red/blue neon with a weak camera channel keeps its chroma.
+                if(maximumSensor>.98f) {
+                    float coverage=Math.min(r,Math.min(g,b))/neutralLimit;
+                    float repair=smoothstep(.98f,.999f,maximumSensor)*smoothstep(.75f,.995f,coverage);
+                    if(repair>0) {
+                        float luminance=Math.max(0,.2126f*red+.7152f*green+.0722f*blue);
+                        red+=(luminance-red)*repair; green+=(luminance-green)*repair; blue+=(luminance-blue)*repair;
+                    }
+                }
                 int x=ox,y=oy;
                 switch(in.rotation) {
                     case 90: x=height-1-oy; y=ox; break;
@@ -75,12 +92,19 @@ public final class RawDeveloper {
                     case 270: x=oy; y=width-1-ox; break;
                 }
                 int index=(y*outputWidth+x)*4;
-                output.put(index,Math.max(0,red)); output.put(index+1,Math.max(0,green));
-                output.put(index+2,Math.max(0,blue)); output.put(index+3,1f);
+                // Keep signed, scene-linear RGB until the shared gamut mapper.
+                // Per-channel clipping here changes the color before rendering.
+                output.put(index,red); output.put(index+1,green);
+                output.put(index+2,blue); output.put(index+3,1f);
             }
         }
         output.position(0);
-        return new LinearPhoto(outputWidth,outputHeight,output);
+        return new LinearPhoto(outputWidth,outputHeight,output,(float)nearSaturatedCells/(width*height));
+    }
+
+    private static float smoothstep(float low,float high,float value) {
+        float t=Math.max(0,Math.min(1,(value-low)/(high-low)));
+        return t*t*(3-2*t);
     }
 
     private static float shade(Input in,int channel,int x,int y) {
