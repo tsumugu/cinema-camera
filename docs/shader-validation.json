@@ -1,0 +1,19 @@
+{
+  "renderer": "local surfaceless EGL / GLES",
+  "passed": [
+    "original bypass, RGBA channel order and upright photo readback",
+    "continuous monotone tones, shadow differentiation, black/white endpoints, midtone contrast",
+    "cool shadows and neutral highlight grays",
+    "subtle visible luminance grain, no temporal flicker or exposure bias",
+    "floating-point RAW texture, linear-to-sRGB base, shadow gradation and highlight shoulder"
+  ],
+  "not_tested": [
+    "Android build",
+    "CameraX device capture",
+    "moto g66j 5G RAW acquisition",
+    "real-device RAW metadata/color accuracy",
+    "RAW/JPEG fallback capture integration",
+    "visual match to generated reference",
+    "preview/save ISP equivalence"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "date_japan": "2026-11-03",
+  "apk": "cinema-camera-android15-debug.apk",
+  "bytes": 9943961,
+  "sha256": "5f6bcfc7e7de2df2ea43de4570740d99858e337c3654ba9c053835e0669b3851",
+  "version_name": "0.1.0",
+  "version_code": 1,
+  "min_sdk": 29,
+  "target_sdk": 35,
+  "compile_sdk": 36,
+  "build": "assembleDebug passed",
+  "lint": {
+    "errors": 0,
+    "warnings": 8
+  },
+  "signature": "APK Signature Scheme v2 verified",
+  "device_camera_test": "not performed",
+  "moto_g66j_raw_acquisition": "not verified"
+}

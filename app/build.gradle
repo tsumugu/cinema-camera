@@ -1,0 +1,52 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.example.cinemacamera'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.example.cinemacamera'
+        minSdk 29
+        targetSdk 35
+        versionCode 4
+        versionName '0.4.0'
+    }
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('.toolchain/debug.keystore')
+            storePassword 'android'
+            keyAlias 'AndroidDebugKey'
+            keyPassword 'android'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.activity:activity:1.10.1'
+    implementation 'androidx.camera:camera-core:1.6.2'
+    implementation 'androidx.camera:camera-camera2:1.6.2'
+    implementation 'androidx.camera:camera-lifecycle:1.6.2'
+}
+
+def localDebugKeystore = rootProject.file('.toolchain/debug.keystore')
+def prepareDebugKeystore = tasks.register('prepareDebugKeystore') {
+    outputs.file(localDebugKeystore)
+    doLast {
+        if (!localDebugKeystore.exists()) {
+            localDebugKeystore.parentFile.mkdirs()
+            exec {
+                commandLine new File(System.getProperty('java.home'), 'bin/keytool').absolutePath,
+                    '-genkeypair', '-keystore', localDebugKeystore.absolutePath,
+                    '-storepass', 'android', '-keypass', 'android', '-alias', 'AndroidDebugKey',
+                    '-dname', 'CN=Android Debug,O=Android,C=US', '-keyalg', 'RSA',
+                    '-keysize', '2048', '-validity', '10000', '-storetype', 'JKS'
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name == 'validateSigningDebug') dependsOn(prepareDebugKeystore)
+}

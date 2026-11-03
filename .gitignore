@@ -1,0 +1,21 @@
+.gradle/
+local.properties
+**/build/
+.idea/
+*.iml
+.toolchain/
+
+# Signing material and local credentials
+*.keystore
+*.jks
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Generated distribution files
+*.apk
+*.aab
+*.idsig
+.DS_Store
