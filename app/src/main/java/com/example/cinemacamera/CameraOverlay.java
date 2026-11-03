@@ -3,6 +3,7 @@ package com.example.cinemacamera;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.os.SystemClock;
@@ -15,6 +16,9 @@ final class CameraOverlay extends View {
     private final Supplier<PreviewFrameInfo> frame;
     private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rectangle=new RectF();
+    private final RectF localBounds=new RectF();
+    private final Matrix inverseRotation=new Matrix();
+    private int displayDegrees;
     private boolean grid,level,touching,hasFocus,exposureSupported;
     private float focusX,focusY,ev,minEv,maxEv;
     private int focusState;
@@ -24,6 +28,10 @@ final class CameraOverlay extends View {
     CameraOverlay(Context context,Supplier<PreviewFrameInfo> frame) {
         super(context); this.frame=frame; setFocusable(true); setClickable(true);
         setContentDescription("タップでフォーカス、上下にドラッグして明るさを調整");
+    }
+    void setDisplayRotation(int degrees) {
+        if(displayDegrees==degrees) return;
+        displayDegrees=degrees; invalidate();
     }
     void setGrid(boolean value) { grid=value; invalidate(); }
     void setLevel(boolean value) { level=value; invalidate(); }
@@ -88,19 +96,29 @@ final class CameraOverlay extends View {
         float radius=Math.min(dp(30),Math.min((right-left)/3,(bottom-top)/3));
         float x=Math.max(left+radius,Math.min(right-radius,focusX));
         float y=Math.max(top+radius,Math.min(bottom-radius,focusY));
+        // Work in the upright UI's coordinates around the focus point. Inverse
+        // mapping keeps the entire indicator inside the actual image at every
+        // quadrant, while the outer clip remains in preview coordinates.
+        localBounds.set(left-x,top-y,right-x,bottom-y);
+        inverseRotation.setRotate(-displayDegrees); inverseRotation.mapRect(localBounds);
+        canvas.save(); canvas.translate(x,y); canvas.rotate(displayDegrees);
         paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(1.5f));
         paint.setColor(focusState==2?0xffb4b4ad:yellow);
-        rectangle.set(x-radius,y-radius,x+radius,y+radius);
+        rectangle.set(-radius,-radius,radius,radius);
         canvas.drawRoundRect(rectangle,dp(3),dp(3),paint);
-        if(!exposureSupported) return;
-        float sunX=x+radius+dp(16);
-        if(sunX+dp(20)>right) sunX=x-radius-dp(16);
+        if(exposureSupported) drawExposure(canvas,radius,localBounds);
+        canvas.restore();
+    }
+    private void drawExposure(Canvas canvas,float radius,RectF bounds) {
+        float sunX=radius+dp(16);
+        if(sunX+dp(20)>bounds.right) sunX=-radius-dp(16);
+        sunX=Math.max(bounds.left+dp(20),Math.min(bounds.right-dp(20),sunX));
         float range=Math.max(Math.abs(minEv),Math.abs(maxEv));
         float offset=range>0 ? ev/range*dp(40) : 0;
-        float sunY=Math.max(top+dp(18),Math.min(bottom-dp(18),y-offset));
+        float sunY=Math.max(bounds.top+dp(18),Math.min(bounds.bottom-dp(18),-offset));
         paint.setColor(0x99ebc964);
-        canvas.drawLine(sunX,Math.max(top+dp(10),y-dp(46)),sunX,
-            Math.min(bottom-dp(10),y+dp(46)),paint);
+        canvas.drawLine(sunX,Math.max(bounds.top+dp(10),-dp(46)),sunX,
+            Math.min(bounds.bottom-dp(10),dp(46)),paint);
         paint.setColor(yellow); canvas.drawCircle(sunX,sunY,dp(3.5f),paint);
         for(int i=0;i<8;i++) {
             double angle=i*Math.PI/4;
@@ -109,7 +127,7 @@ final class CameraOverlay extends View {
         }
         paint.setStyle(Paint.Style.FILL); paint.setTextSize(dp(11)); paint.setTextAlign(Paint.Align.CENTER);
         canvas.drawText(String.format(Locale.JAPAN,"%+.1f",ev),sunX,
-            Math.min(bottom-dp(3),sunY+dp(24)),paint);
+            Math.min(bounds.bottom-dp(3),sunY+dp(24)),paint);
     }
     private float dp(float value) { return value*getResources().getDisplayMetrics().density; }
 }

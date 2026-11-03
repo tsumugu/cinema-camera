@@ -1,0 +1,12 @@
+{
+  "versionCode": 5,
+  "versionName": "0.5.0",
+  "minSdk": 29,
+  "targetSdk": 35,
+  "artifact": "cinema-camera-android15-v0.5.0-debug.apk",
+  "bytes": 3620299,
+  "sha256": "1c1ab7f95f087a5ced0506a7dcc2036f31fe0134117e78c76531e96a66614b66",
+  "build": "offline SDK javac + D8 + AAPT2 + zipalign + apksigner",
+  "testsRun": false,
+  "deviceVerified": false
+}

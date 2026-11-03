@@ -61,6 +61,8 @@ final class CameraScreen implements SensorEventListener {
     private boolean shutterDown,holdTriggered,previewTouch,previewClickFromTouch;
     private int shutterPointer=-1,previewPointer=-1,startExposureIndex;
     private float downY,downX;
+    private int gestureDegrees;
+    private boolean exposureDragging;
     private final int touchSlop;
     private final Runnable startHold=this::beginHold;
     private void beginHold() {
@@ -95,6 +97,7 @@ final class CameraScreen implements SensorEventListener {
                 else if(degrees>=135&&degrees<225) captureRotation=Surface.ROTATION_180;
                 else if(degrees>=225&&degrees<315) captureRotation=Surface.ROTATION_90;
                 else captureRotation=Surface.ROTATION_0;
+                applyCaptureOrientation();
             }
         };
 
@@ -187,6 +190,16 @@ final class CameraScreen implements SensorEventListener {
         permissionButton.setText(text); permissionButton.setVisibility(visible?View.VISIBLE:View.GONE);
     }
     int captureRotation() { return captureRotation; }
+    private int uiDegrees() {
+        return captureRotation==Surface.ROTATION_90?90:captureRotation==Surface.ROTATION_180?180:
+            captureRotation==Surface.ROTATION_270?270:0;
+    }
+    private void applyCaptureOrientation() {
+        // End an active drag before switching its axis; the next touch starts
+        // from the current EV, so rotating the phone cannot make EV jump.
+        if(previewTouch) endPreviewTouch();
+        overlay.setDisplayRotation(uiDegrees());
+    }
     void thumbnail(Bitmap bitmap) {
         gallery.setImageBitmap(bitmap);
         if(thumbnail!=null&&thumbnail!=bitmap) thumbnail.recycle();
@@ -251,6 +264,7 @@ final class CameraScreen implements SensorEventListener {
         switch(event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downX=event.getX(); downY=event.getY(); startExposureIndex=actions.exposureIndex();
+                gestureDegrees=uiDegrees(); exposureDragging=false;
                 previewTouch=actions.focus(downX,downY);
                 if(!previewTouch) return false;
                 previewPointer=event.getPointerId(0); overlay.setTouching(true);
@@ -259,12 +273,13 @@ final class CameraScreen implements SensorEventListener {
                 if(!previewTouch) return false;
                 int index=event.findPointerIndex(previewPointer);
                 if(index<0) { endPreviewTouch(); return true; }
-                float dy=event.getY(index)-downY;
-                if(Math.abs(dy)>touchSlop) actions.exposureDrag(startExposureIndex,dy);
+                float delta=ExposureDrag.verticalDelta(gestureDegrees,event.getX(index)-downX,event.getY(index)-downY);
+                if(Math.abs(delta)>touchSlop) exposureDragging=true;
+                if(exposureDragging) actions.exposureDrag(startExposureIndex,delta);
                 return true;
             case MotionEvent.ACTION_UP:
                 if(!previewTouch) return false;
-                boolean click=Math.abs(event.getY()-downY)<=touchSlop&&Math.abs(event.getX()-downX)<=touchSlop;
+                boolean click=!exposureDragging&&Math.hypot(event.getY()-downY,event.getX()-downX)<=touchSlop;
                 endPreviewTouch();
                 if(click) {
                     previewClickFromTouch=true;
@@ -282,7 +297,7 @@ final class CameraScreen implements SensorEventListener {
     }
 
     private void endPreviewTouch() {
-        previewTouch=false; previewPointer=-1; overlay.setTouching(false);
+        previewTouch=false; previewPointer=-1; exposureDragging=false; overlay.setTouching(false);
         overlay.getParent().requestDisallowInterceptTouchEvent(false);
     }
 
