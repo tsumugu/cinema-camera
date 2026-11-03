@@ -39,6 +39,9 @@ final class CameraScreen implements SensorEventListener {
         void permission();
         void gallery();
         void retrySaving();
+        void manualSettings();
+        String locationLabel();
+        void toggleLocation();
     }
     final LinearLayout root;
     final CameraOverlay overlay;
@@ -53,6 +56,10 @@ final class CameraScreen implements SensorEventListener {
     private final Sensor levelSensor;
     private final Button shutter,flashButton,gridButton,levelButton,permissionButton;
     private final TextView status;
+    private final TextView locationHint;
+    private final Runnable locationRefresh=this::refreshLocationHint;
+    private final Button modeButton;
+    private boolean manualExposure,manualFocus;
     private final ImageButton gallery;
     private Bitmap thumbnail;
     private final OrientationEventListener orientation;
@@ -114,6 +121,8 @@ final class CameraScreen implements SensorEventListener {
         Button settingsButton=tool("設定"); settingsButton.setText("設定\n⋮"); settingsButton.setTextColor(0xffc9ccc3);
         settingsButton.setOnClickListener(view -> {
             PopupMenu menu=new PopupMenu(context,settingsButton);
+            menu.getMenu().add("撮影設定（AUTO / M / MF）").setOnMenuItemClickListener(item -> { actions.manualSettings(); return true; });
+            menu.getMenu().add(actions.locationLabel()).setOnMenuItemClickListener(item -> { actions.toggleLocation(); return true; });
             menu.getMenu().add("フィルター調整").setOnMenuItemClickListener(item -> { showFilterSettings(); return true; });
             menu.getMenu().add("未保存の写真を再試行").setOnMenuItemClickListener(item -> { actions.retrySaving(); return true; });
             menu.show();
@@ -167,9 +176,11 @@ final class CameraScreen implements SensorEventListener {
         gallery.setOnClickListener(view -> actions.gallery());
         FrameLayout.LayoutParams album=new FrameLayout.LayoutParams(dp(60),dp(60),Gravity.LEFT|Gravity.CENTER_VERTICAL);
         album.leftMargin=dp(12); bottom.addView(gallery,album);
+        modeButton=tool("撮影モード");modeButton.setText("撮影\nAUTO");modeButton.setTextColor(0xffc9ccc3);modeButton.setOnClickListener(v -> actions.manualSettings());
+        FrameLayout.LayoutParams mode=new FrameLayout.LayoutParams(dp(70),dp(60),Gravity.RIGHT|Gravity.CENTER_VERTICAL);mode.rightMargin=dp(8);bottom.addView(modeButton,mode);
         root.addView(bottom,new LinearLayout.LayoutParams(-1,dp(88)));
-        TextView hint=new TextView(context); hint.setText("長押しで連写"); hint.setTextSize(10);
-        hint.setTextColor(0xff92968d); hint.setGravity(Gravity.CENTER); root.addView(hint);
+        locationHint=new TextView(context); locationHint.setText("長押しで連写"); locationHint.setTextSize(10);
+        locationHint.setTextColor(0xff92968d); locationHint.setGravity(Gravity.CENTER); root.addView(locationHint);
         updateTools();
     }
 
@@ -184,7 +195,8 @@ final class CameraScreen implements SensorEventListener {
         filterDialog.show();
     }
 
-    boolean flashEnabled() { return flash&&flashAvailable; }
+    void manualMode(boolean exposure,boolean focus){manualExposure=exposure;manualFocus=focus;modeButton.setText("撮影\n"+(exposure?"M":focus?"A / MF":"AUTO"));modeButton.setTextColor(exposure||focus?0xffebc964:0xffc9ccc3);overlay.clearIndicator();updateTools();}
+    boolean flashEnabled() { return flash&&flashAvailable&&!manualExposure; }
     void flashAvailable(boolean available) { flashAvailable=available; updateTools(); }
     void ready(boolean ready) { shutter.setEnabled(ready); overlay.setEnabled(ready); overlay.invalidate(); }
     void status(String message) { status.setText(message); }
@@ -207,10 +219,11 @@ final class CameraScreen implements SensorEventListener {
         if(thumbnail!=null&&thumbnail!=bitmap) thumbnail.recycle();
         thumbnail=bitmap;
     }
-    void resume() { resumed=true; if(orientation.canDetectOrientation()) orientation.enable(); updateSensors(); }
+    private void refreshLocationHint(){if(!resumed)return;locationHint.setText("長押しで連写 · "+actions.locationLabel());handler.postDelayed(locationRefresh,1000);}
+    void resume() { resumed=true; if(orientation.canDetectOrientation()) orientation.enable(); updateSensors(); handler.removeCallbacks(locationRefresh);handler.post(locationRefresh); }
     void pause() {
         if(filterDialog!=null&&filterDialog.isShowing()) filterDialog.dismiss();
-        resumed=false; orientation.disable(); stopShutterTouch(); endPreviewTouch(); overlay.clearIndicator();
+        resumed=false; handler.removeCallbacks(locationRefresh); orientation.disable(); stopShutterTouch(); endPreviewTouch(); overlay.clearIndicator();
         updateSensors();
     }
     void destroy() {
@@ -220,10 +233,10 @@ final class CameraScreen implements SensorEventListener {
     }
 
     private void updateTools() {
-        flashButton.setEnabled(flashAvailable);
-        flashButton.setText("フラッシュ\n"+(flashAvailable?(flash?"ON":"OFF"):"—"));
+        flashButton.setEnabled(flashAvailable&&!manualExposure);
+        flashButton.setText("フラッシュ\n"+(manualExposure?"M時OFF":flashAvailable?(flash?"ON":"OFF"):"—"));
         flashButton.setTextColor(flashEnabled()?0xffebc964:0xffc9ccc3);
-        flashButton.setContentDescription("フラッシュ "+(flashAvailable?(flash?"オン":"オフ"):"非対応"));
+        flashButton.setContentDescription("フラッシュ "+(manualExposure?"マニュアル露出中はオフ":flashAvailable?(flash?"オン":"オフ"):"非対応"));
         gridButton.setText("グリッド\n"+(grid?"ON":"OFF"));
         gridButton.setSelected(grid); gridButton.setTextColor(grid?0xffebc964:0xffc9ccc3);
         gridButton.setContentDescription("グリッド "+(grid?"オン":"オフ"));

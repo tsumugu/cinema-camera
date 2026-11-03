@@ -8,9 +8,12 @@ import java.util.LinkedHashMap;
 
 /** Match metadata to the RAW image by SENSOR_TIMESTAMP, never by arrival order. */
 final class CaptureMetadata extends CameraCaptureSession.CaptureCallback {
+    private volatile TotalCaptureResult latest;
+    TotalCaptureResult latest(){return latest;}
     private final LinkedHashMap<Long,TotalCaptureResult> frames=new LinkedHashMap<>();
     @Override public synchronized void onCaptureCompleted(CameraCaptureSession session,
             CaptureRequest request,TotalCaptureResult result) {
+        latest=result;
         Integer intent=request.get(CaptureRequest.CONTROL_CAPTURE_INTENT);
         Long time=result.get(CaptureResult.SENSOR_TIMESTAMP);
         if(time==null||intent==null||intent!=CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE) return;
@@ -25,6 +28,6 @@ final class CaptureMetadata extends CameraCaptureSession.CaptureCallback {
             if(remaining<=0) return null;
             wait(Math.max(1,remaining/1_000_000L));
         }
-        return frames.remove(timestamp);
+        return frames.get(timestamp);
     }
 }

@@ -89,7 +89,13 @@ public final class PhotoSaveJobService extends JobService {
             String software="Cinema Camera "+getPackageManager().getPackageInfo(getPackageName(),0).versionName;
             org.json.JSONObject diagnostics=new org.json.JSONObject().put("source",source).put("colorPipeline","highlight-v2")
                 .put("rawNearSaturatedFraction",nearSaturated>=0?(Object)(double)nearSaturated:org.json.JSONObject.NULL)
-                .put("look",record.json.getJSONObject("look"));
+                .put("look",record.json.getJSONObject("look"))
+                .put("manualRequest",record.json.optJSONObject("manualRequest"));
+            org.json.JSONObject capture=record.json.optJSONObject("capture");
+            if(capture!=null){diagnostics.put("captureMetadataSource",capture.optString("metadataSource"));
+                if(capture.has("focusDiopters"))diagnostics.put("actualFocusDiopters",capture.getDouble("focusDiopters"));}
+            // GPS coordinates are written only into standard GPS tags, so stripping
+            // geotags does not leave a second copy hidden in UserComment.
             Uri uri=PhotoStore.publish(getContentResolver(),record,rendered,task::stopped,software,diagnostics.toString());
             // Journal fsync precedes deleting either original. A process death
             // between publication and this write is handled by stable-name lookup.

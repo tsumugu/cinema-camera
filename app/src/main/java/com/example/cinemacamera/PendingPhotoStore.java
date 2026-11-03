@@ -41,16 +41,27 @@ final class PendingPhotoStore {
         if(!id.matches("[0-9a-fA-F-]{36}")) throw new IllegalArgumentException("Invalid photo ID");
         return new File(root(context),id);
     }
-    static void create(Context context,String id,long time,LookSettings look) throws Exception {
+    static void create(Context context,String id,long time,LookSettings look,JSONObject capture,JSONObject location,JSONObject manual) throws Exception {
         ACTIVE_CAPTURES.add(id);
         synchronized(JOURNAL_LOCK) {
             File folder=dir(context,id);
-            if(new File(folder,"job.json").exists()) return;
+            if(new File(folder,"job.json").exists()) {
+                JSONObject value=readJson(new File(folder,"job.json"));
+                if(value.getString("state").equals("capturing")) {
+                    value.put("capture",capture).put("location",location==null?JSONObject.NULL:location).put("manualRequest",manual);
+                    writeJson(new File(folder,"job.json"),value);
+                }
+                return;
+            }
             JSONObject settings=new JSONObject().put("strength",look.strength).put("cool",look.cool)
                 .put("saturation",look.saturation).put("contrast",look.contrast).put("grain",look.grain);
             writeJson(new File(folder,"job.json"),new JSONObject().put("version",1).put("id",id)
-                .put("capturedAt",time).put("look",settings).put("owner",OWNER).put("state","capturing"));
+                .put("capturedAt",time).put("look",settings).put("owner",OWNER).put("state","capturing")
+                .put("capture",capture).put("location",location==null?JSONObject.NULL:location).put("manualRequest",manual));
         }
+    }
+    static void captureMetadata(Context context,String id,JSONObject capture) throws Exception {
+        synchronized(JOURNAL_LOCK){File file=new File(dir(context,id),"job.json");JSONObject value=readJson(file);value.put("capture",capture);writeJson(file,value);}
     }
     static Record read(Context context,String id) throws Exception {
         synchronized(JOURNAL_LOCK) { return new Record(readJson(new File(dir(context,id),"job.json"))); }

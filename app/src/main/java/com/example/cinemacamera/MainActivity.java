@@ -70,6 +70,13 @@ public final class MainActivity extends ComponentActivity {
     private ProcessCameraProvider provider;
     private boolean providerRequested, frameReady;
     private Camera camera;
+    private PhotoLocation photoLocation;
+    private ManualSettings manualSettings,committedManual;
+    private ManualSettings.Limits manualLimits;
+    private ManualSettingsDialog manualDialog;
+    private boolean manualChanging;
+    private long manualRequest;
+    private Runnable pendingManual;
     private ImageCapture capture;
     private ImageAnalysis analysisUseCase;
     private CaptureMetadata captureMetadata;
@@ -89,25 +96,54 @@ public final class MainActivity extends ComponentActivity {
     };
     private final ActivityResultLauncher<String> permission = registerForActivityResult(
         new ActivityResultContracts.RequestPermission(),granted -> {
-            if(granted) startCamera();
+            if(granted) { startCamera(); maybeAskLocation(); }
             else {
                 screen.permission("カメラを許可",true);
                 setStatus("撮影するにはカメラの許可が必要です");
             }
         });
 
+    private final ActivityResultLauncher<String[]> locationPermission=registerForActivityResult(
+        new ActivityResultContracts.RequestMultiplePermissions(),result -> {
+            boolean granted=photoLocation.permitted();photoLocation.enabled(granted);
+            if(active&&granted) photoLocation.start();
+            setStatus(granted?"位置情報を記録します（測位できた写真のみ）":"位置情報なしで撮影します");
+        });
+    private void maybeAskLocation() {
+        if(!photoLocation.enabled()) return;
+        if(photoLocation.permitted()) { if(active)photoLocation.start(); return; }
+        android.content.SharedPreferences p=getSharedPreferences("geotag",0);
+        if(p.getBoolean("asked",false))return;
+        p.edit().putBoolean("asked",true).apply();
+        locationPermission.launch(new String[]{Manifest.permission.ACCESS_FINE_LOCATION,Manifest.permission.ACCESS_COARSE_LOCATION});
+    }
+    private void toggleLocation() {
+        if(photoLocation.enabled()&&photoLocation.permitted()){photoLocation.enabled(false);setStatus("位置情報の記録をOFFにしました");return;}
+        photoLocation.enabled(true);
+        if(photoLocation.permitted()){if(active)photoLocation.start();setStatus("位置情報を記録します（測位できた写真のみ）");}
+        else {
+            if(getSharedPreferences("geotag",0).getBoolean("asked",false)&&!shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_COARSE_LOCATION)&&!shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                setStatus("端末設定で位置情報を許可してください");
+                startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+getPackageName())));return;
+            }
+            getSharedPreferences("geotag",0).edit().putBoolean("asked",false).apply();maybeAskLocation();
+        }
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        photoLocation=new PhotoLocation(this); committedManual=ManualSettings.load(this);manualSettings=committedManual;
         ContextCompat.registerReceiver(this,saveReceiver,new IntentFilter(SaveScheduler.CHANGED),ContextCompat.RECEIVER_NOT_EXPORTED);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildUi();
         if(checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
             permission.launch(Manifest.permission.CAMERA);
+        else maybeAskLocation();
     }
 
     @Override protected void onResume() {
         super.onResume(); active = true;
-        screen.resume();
+        screen.resume(); photoLocation.start();
         surface.startFrames(); surface.onResume();
         if(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
         refreshSavedPhotos();
@@ -133,6 +169,8 @@ public final class MainActivity extends ComponentActivity {
 
     @Override protected void onPause() {
         active = false; session++; frameReady = false; screen.ready(false);
+        photoLocation.stop();if(manualDialog!=null&&manualDialog.isShowing())manualDialog.dismiss();
+        manualRequest++;manualChanging=false;if(pendingManual!=null)main.removeCallbacks(pendingManual);
         focusRequest++; exposureRequest++;
         captureQueue.clear(); main.removeCallbacks(drainQueue); screen.pause();
         Shot pausedShot=currentShot; currentShot=null;
@@ -211,7 +249,9 @@ public final class MainActivity extends ComponentActivity {
             if(lastError!=null) throw lastError;
             configureExposure();
             screen.flashAvailable(camera.getCameraInfo().hasFlashUnit());
-            reduceEdgeEnhancement();
+            manualLimits=new ManualSettings.Limits(characteristics);
+            committedManual=manualLimits.fit(ManualSettings.load(this));
+            applyManual(committedManual,false);
             setStatus("カメラを起動しています…");
         } catch(Exception error) { cameraError(error); }
     }
@@ -257,7 +297,7 @@ public final class MainActivity extends ComponentActivity {
 
     /** Sensor acquisition is serialized; development/saving runs independently. */
     private void drainCaptures() {
-        if(!active||!frameReady||capture==null||currentShot!=null) return;
+        if(!active||!frameReady||capture==null||currentShot!=null||manualChanging||manualDialog!=null&&manualDialog.isShowing()) return;
         if(!retries.isEmpty()) {
             if(capture.getOutputFormat()!=ImageCapture.OUTPUT_FORMAT_JPEG) {
                 surface.startFrames(); startCamera(); return;
@@ -268,20 +308,21 @@ public final class MainActivity extends ComponentActivity {
         if(outstandingPhotos>=MAX_OUTSTANDING) { updateCaptureStatus(); return; }
         if(captureQueue.startNext()) {
             outstandingPhotos++;
-            beginShot(new PhotoJob(screen.flashEnabled(),screen.captureRotation(),System.currentTimeMillis(),screen.lookSettings()));
+            beginShot(new PhotoJob(screen.flashEnabled(),screen.captureRotation(),System.currentTimeMillis(),screen.lookSettings(),manualSettings,photoLocation.snapshot()));
         }
     }
 
     private void beginShot(PhotoJob job) {
         if(capture==null||!active) { finishJob(job,null,null,new IllegalStateException("Camera is not ready")); return; }
         try {
+            if(job.retrying){job.location=photoLocation.snapshot();job.captureExif=CaptureExif.base(System.currentTimeMillis(),java.util.TimeZone.getDefault().getID());}
             SaveScheduler.initialize(this);
-            PendingPhotoStore.create(this,job.id,job.capturedAt,job.lookSettings);
+            PendingPhotoStore.create(this,job.id,job.capturedAt,job.lookSettings,job.captureExif,job.location,job.manual.json());
         } catch(Exception error) { PendingPhotoStore.ACTIVE_CAPTURES.remove(job.id); finishJob(job,null,null,error); return; }
         Shot shot=new Shot(session,capture.getOutputFormat(),job,captureMetadata,characteristics);
         currentShot=shot;
         shot.timeout=() -> enqueueCapture(() -> deliver(shot,new IllegalStateException("Capture timed out")));
-        main.postDelayed(shot.timeout,20_000);
+        main.postDelayed(shot.timeout,20_000+(job.manual.exposure?job.manual.shutter/1_000_000:0));
         updateCaptureStatus();
         try {
             // The preview stays in the portrait UI; each photo uses the physical
@@ -302,15 +343,18 @@ public final class MainActivity extends ComponentActivity {
             if(image.getFormat()==ImageFormat.RAW_SENSOR) {
                 shot.rawReceived=true;
                 try {
-                    RawDeveloper.Input input=RawMetadata.input(image,shot.info,
-                        shot.metadata.await(image.getImageInfo().getTimestamp()));
+                    android.hardware.camera2.CaptureResult result=shot.metadata.await(image.getImageInfo().getTimestamp());
+                    recordCaptureExif(shot,result,null);
+                    RawDeveloper.Input input=RawMetadata.input(image,shot.info,result);
                     PendingPhotoStore.writeRaw(getApplicationContext(),shot.job.id,input);
                     shot.rawAvailable=true;
                 } catch(Throwable error) { shot.captureError=error; Log.w("CinemaCamera","RAW snapshot unavailable",error); }
             } else {
                 shot.jpegReceived=true;
                 try {
-                    PendingPhotoStore.writeJpeg(getApplicationContext(),shot.job.id,PhotoBitmaps.snapshot(image));
+                    PhotoBitmaps.Encoded encoded=PhotoBitmaps.snapshot(image);
+                    recordCaptureExif(shot,shot.hasSensorExif?null:shot.metadata.await(image.getImageInfo().getTimestamp()),encoded.bytes);
+                    PendingPhotoStore.writeJpeg(getApplicationContext(),shot.job.id,encoded);
                     shot.jpegAvailable=true;
                 } catch(Throwable error) { shot.captureError=error; }
             }
@@ -320,6 +364,15 @@ public final class MainActivity extends ComponentActivity {
                 ||(shot.format==ImageCapture.OUTPUT_FORMAT_JPEG&&shot.jpegReceived)) deliver(shot,shot.captureError);
     }
 
+    private void recordCaptureExif(Shot shot,android.hardware.camera2.CaptureResult result,byte[] jpeg) {
+        if(shot.hasSensorExif)return;
+        try {
+            org.json.JSONObject data=result!=null?CaptureExif.fromResult(shot.job.captureExif,result,shot.info):
+                jpeg!=null?CaptureExif.fromJpeg(shot.job.captureExif,jpeg):shot.job.captureExif;
+            PendingPhotoStore.captureMetadata(this,shot.job.id,data);shot.hasSensorExif=result!=null;
+        } catch(Exception error){Log.w("CinemaCamera","Capture metadata unavailable; saving available fields",error);}
+    }
+
     /** Capture executor only. Release the sensor slot, retaining the processing slot. */
     private void deliver(Shot shot,Throwable reason) {
         synchronized(shot) {
@@ -327,7 +380,7 @@ public final class MainActivity extends ComponentActivity {
             shot.delivered=true;
         }
         main.removeCallbacks(shot.timeout);
-        boolean usable=shot.rawAvailable||shot.jpegAvailable;
+        boolean usable=shot.rawAvailable||shot.jpegAvailable||PendingPhotoStore.hasInput(this,shot.job.id);
         if(usable) {
             try {
                 PendingPhotoStore.ready(getApplicationContext(),shot.job.id);
@@ -407,9 +460,14 @@ public final class MainActivity extends ComponentActivity {
         final int rotation;
         final long capturedAt;
         final LookSettings lookSettings;
+        final ManualSettings manual;
+        org.json.JSONObject location,captureExif;
         boolean retrying,done;
-        PhotoJob(boolean flash,int rotation,long capturedAt,LookSettings lookSettings) {
-            this.flash=flash; this.rotation=rotation; this.capturedAt=capturedAt; this.lookSettings=lookSettings;
+        PhotoJob(boolean flash,int rotation,long capturedAt,LookSettings lookSettings,ManualSettings manual,org.json.JSONObject location) {
+            this.flash=flash;this.rotation=rotation;this.capturedAt=capturedAt;this.lookSettings=lookSettings;this.manual=manual;this.location=location;
+            org.json.JSONObject base;
+            try{base=CaptureExif.base(capturedAt,java.util.TimeZone.getDefault().getID());}catch(Exception error){base=new org.json.JSONObject();}
+            captureExif=base;
         }
     }
     private static final class Shot {
@@ -419,7 +477,7 @@ public final class MainActivity extends ComponentActivity {
         final CameraCharacteristics info;
         volatile boolean cancelled,delivered;
         boolean rawReceived,jpegReceived;
-        boolean rawAvailable,jpegAvailable;
+        boolean rawAvailable,jpegAvailable,hasSensorExif;
         Throwable captureError;
         Runnable timeout;
         Shot(int token,int format,PhotoJob job,CaptureMetadata metadata,CameraCharacteristics info) {
@@ -427,20 +485,50 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
+    private void showManualSettings() {
+        if(camera==null||manualLimits==null)return;
+        if(currentShot!=null||!retries.isEmpty()){setStatus("撮影が終わってから設定してください");return;}
+        if(manualDialog!=null&&manualDialog.isShowing())return;
+        captureQueue.stopHold();
+        ManualSettings initial=committedManual;
+        if(!getSharedPreferences("manual-camera",0).contains("iso")&&captureMetadata.latest()!=null) {
+            Long time=captureMetadata.latest().get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME);
+            Integer iso=captureMetadata.latest().get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY);
+            if(time!=null&&iso!=null) initial=manualLimits.fit(new ManualSettings(false,time,iso,initial.focus,initial.distance));
+        }
+        manualDialog=new ManualSettingsDialog(this,initial,manualLimits,x -> applyManual(x,false),x -> applyManual(x,true));
+        manualDialog.show();
+    }
+
     @SuppressLint("UnsafeOptInUsageError")
-    private void reduceEdgeEnhancement() {
-        // Best effort only. No assumption about RAW, manual WB or vendor HDR.
-        try {
-            int[] modes = Camera2CameraInfo.from(camera.getCameraInfo())
-                .getCameraCharacteristic(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
-            if(modes == null) return;
-            for(int mode : modes) if(mode == CaptureRequest.EDGE_MODE_OFF) {
-                Camera2CameraControl.from(camera.getCameraControl()).setCaptureRequestOptions(
-                    new CaptureRequestOptions.Builder()
-                        .setCaptureRequestOption(CaptureRequest.EDGE_MODE,CaptureRequest.EDGE_MODE_OFF).build());
-                break;
-            }
-        } catch(Exception error) { Log.i("CinemaCamera","Using device edge processing",error); }
+    private void applyManual(ManualSettings requested,boolean persist) {
+        if(!active||camera==null||manualLimits==null)return;
+        if(pendingManual!=null)main.removeCallbacks(pendingManual);
+        ManualSettings next=manualLimits.fit(requested);Camera target=camera;long generation=++manualRequest;manualChanging=true;
+        pendingManual=() -> {
+            try {
+                CaptureRequestOptions.Builder options=new CaptureRequestOptions.Builder();
+                int[] edges=characteristics.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+                if(edges!=null)for(int edge:edges)if(edge==CaptureRequest.EDGE_MODE_OFF){options.setCaptureRequestOption(CaptureRequest.EDGE_MODE,CaptureRequest.EDGE_MODE_OFF);break;}
+                if(next.exposure) {
+                    options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE,CaptureRequest.CONTROL_AE_MODE_OFF)
+                        .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME,next.shutter)
+                        .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY,next.iso)
+                        .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION,Math.min(manualLimits.frameMax,Math.max(33_333_333L,next.shutter+Math.min(1_000_000L,manualLimits.frameMax-next.shutter))))
+                        .setCaptureRequestOption(CaptureRequest.FLASH_MODE,CaptureRequest.FLASH_MODE_OFF);
+                }
+                if(next.focus)options.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_OFF)
+                    .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE,next.distance);
+                ListenableFuture<Void> future=Camera2CameraControl.from(target.getCameraControl()).setCaptureRequestOptions(options.build());
+                future.addListener(() -> {
+                    if(!active||camera!=target||generation!=manualRequest)return;
+                    try {future.get();manualSettings=next;manualChanging=false;screen.manualMode(next.exposure,next.focus);
+                        if(persist){committedManual=next;next.save(this);}drainCaptures();}
+                    catch(Exception error){manualChanging=false;setStatus("撮影設定を適用できませんでした");if(persist)applyManual(committedManual,false);}
+                },main::post);
+            } catch(Exception error){manualChanging=false;setStatus("この撮影設定は利用できません");}
+        };
+        main.postDelayed(pendingManual,80);
     }
 
     private void configureExposure() {
@@ -455,7 +543,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void adjustExposure(int startIndex,float deltaY) {
-        if(!active||camera==null||!exposureSupported) return;
+        if(!active||camera==null||!exposureSupported||manualSettings.exposure) return;
         int index=ExposureDrag.index(startIndex,deltaY,dp(100),exposureStep,exposureLow,exposureHigh);
         if(index!=exposureIndex) applyExposure(index);
     }
@@ -492,13 +580,14 @@ public final class MainActivity extends ComponentActivity {
         Camera target=camera;
         long request=++focusRequest;
         screen.overlay.showFocus(x,y,desiredEv,exposureLow*exposureStep,
-            exposureHigh*exposureStep,exposureSupported);
+            exposureHigh*exposureStep,exposureSupported&&!manualSettings.exposure);
         try {
             SurfaceOrientedMeteringPointFactory factory=new SurfaceOrientedMeteringPointFactory(
                 info.sourceWidth,info.sourceHeight,analysisUseCase);
             MeteringPoint metering=factory.createPoint(point[0]*info.sourceWidth,point[1]*info.sourceHeight,.15f);
-            FocusMeteringAction action=new FocusMeteringAction.Builder(metering,
-                FocusMeteringAction.FLAG_AF|FocusMeteringAction.FLAG_AE)
+            int flags=(manualSettings.focus?0:FocusMeteringAction.FLAG_AF)|(manualSettings.exposure?0:FocusMeteringAction.FLAG_AE);
+            if(flags==0)return true;
+            FocusMeteringAction action=new FocusMeteringAction.Builder(metering,flags)
                 .setAutoCancelDuration(5,TimeUnit.SECONDS).build();
             ListenableFuture<FocusMeteringResult> future=target.getCameraControl().startFocusAndMetering(action);
             future.addListener(() -> {
@@ -572,6 +661,9 @@ public final class MainActivity extends ComponentActivity {
             @Override public int exposureIndex() { return exposureIndex; }
             @Override public void exposureDrag(int startIndex,float deltaY) { adjustExposure(startIndex,deltaY); }
             @Override public void gallery() { openPhotoFolder(); }
+            @Override public void manualSettings() { showManualSettings(); }
+            @Override public String locationLabel() { return photoLocation.label(); }
+            @Override public void toggleLocation() { MainActivity.this.toggleLocation(); }
             @Override public void retrySaving() {
                 setStatus("未保存の写真を再試行します…");
                 processingExecutor.execute(() -> {

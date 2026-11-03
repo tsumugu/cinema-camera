@@ -74,6 +74,8 @@ final class PhotoStore {
             exif.setAttribute(ExifInterface.TAG_SOFTWARE,software);
             exif.setAttribute(ExifInterface.TAG_USER_COMMENT,diagnostics);
             exif.setAttribute(ExifInterface.TAG_ORIENTATION,Integer.toString(ExifInterface.ORIENTATION_NORMAL));
+            try { CaptureExif.apply(exif,record); }
+            catch(Exception metadataError) { throw new IOException("Could not write capture metadata",metadataError); }
             exif.saveAttributes();
             stream.getFD().sync();
         }

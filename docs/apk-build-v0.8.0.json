@@ -1,0 +1,16 @@
+{
+  "versionCode": 9,
+  "versionName": "0.8.0",
+  "minSdk": 29,
+  "targetSdk": 35,
+  "artifact": "cinema-camera-android15-v0.8.0-debug.apk",
+  "bytes": 3645258,
+  "sha256": "753d986635d39ce175afbd588422a4019a77547c61254e774bef34bab4c8ac9a",
+  "changes": [
+    "capture-result EXIF",
+    "foreground location geotags",
+    "capability-limited manual exposure and focus"
+  ],
+  "testsRun": false,
+  "deviceVerified": false
+}
