@@ -4,6 +4,9 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import androidx.core.content.ContextCompat;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
@@ -57,7 +60,6 @@ public final class MainActivity extends ComponentActivity {
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService processingExecutor = Executors.newSingleThreadExecutor();
-    private PhotoRenderer photoRenderer;
     private static final int MAX_OUTSTANDING=3;
     private final ArrayDeque<PhotoJob> retries=new ArrayDeque<>();
     private int outstandingPhotos;
@@ -82,6 +84,9 @@ public final class MainActivity extends ComponentActivity {
     private float exposureStep,desiredEv;
     private long focusRequest,exposureRequest;
     private final Runnable drainQueue=this::drainCaptures;
+    private final BroadcastReceiver saveReceiver=new BroadcastReceiver() {
+        @Override public void onReceive(Context context,Intent intent) { refreshSavedPhotos(); }
+    };
     private final ActivityResultLauncher<String> permission = registerForActivityResult(
         new ActivityResultContracts.RequestPermission(),granted -> {
             if(granted) startCamera();
@@ -93,7 +98,7 @@ public final class MainActivity extends ComponentActivity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        photoRenderer=new PhotoRenderer(getApplicationContext());
+        ContextCompat.registerReceiver(this,saveReceiver,new IntentFilter(SaveScheduler.CHANGED),ContextCompat.RECEIVER_NOT_EXPORTED);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildUi();
         if(checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
@@ -105,12 +110,23 @@ public final class MainActivity extends ComponentActivity {
         screen.resume();
         surface.startFrames(); surface.onResume();
         if(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
+        refreshSavedPhotos();
+    }
+
+    private void refreshSavedPhotos() {
+        if(isDestroyed()) return;
+        outstandingPhotos=PendingPhotoStore.count(this);
+        if(active) { updateCaptureStatus(); drainCaptures(); }
         processingExecutor.execute(() -> {
             try {
+                PendingPhotoStore.recover(getApplicationContext());
                 Uri latest=PhotoStore.latest(getContentResolver());
                 if(latest==null) return;
                 Bitmap thumbnail=getContentResolver().loadThumbnail(latest,new Size(128,128),null);
-                main.post(() -> { if(!isDestroyed()) screen.thumbnail(thumbnail); else thumbnail.recycle(); });
+                main.post(() -> {
+                    if(!isDestroyed()) { screen.thumbnail(thumbnail); completedPhotos=1; if(active) updateCaptureStatus(); }
+                    else thumbnail.recycle();
+                });
             } catch(Exception error) { Log.i("CinemaCamera","No thumbnail",error); }
         });
     }
@@ -131,12 +147,9 @@ public final class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         analysisExecutor.shutdown();
-        // Finish capture callbacks already running before closing the processing queue.
-        // Acquired photos continue when an external viewer pauses this Activity.
-        enqueueCapture(() -> {
-            processingExecutor.execute(photoRenderer::close); processingExecutor.shutdown();
-        });
-        captureExecutor.shutdown();
+        // Durable save jobs are owned by JobScheduler and are not cancelled here.
+        captureExecutor.shutdown(); processingExecutor.shutdown();
+        unregisterReceiver(saveReceiver);
         screen.destroy();
         super.onDestroy();
     }
@@ -251,6 +264,7 @@ public final class MainActivity extends ComponentActivity {
             }
             beginShot(retries.removeFirst()); return;
         }
+        outstandingPhotos=PendingPhotoStore.count(this);
         if(outstandingPhotos>=MAX_OUTSTANDING) { updateCaptureStatus(); return; }
         if(captureQueue.startNext()) {
             outstandingPhotos++;
@@ -260,6 +274,10 @@ public final class MainActivity extends ComponentActivity {
 
     private void beginShot(PhotoJob job) {
         if(capture==null||!active) { finishJob(job,null,null,new IllegalStateException("Camera is not ready")); return; }
+        try {
+            SaveScheduler.initialize(this);
+            PendingPhotoStore.create(this,job.id,job.capturedAt,job.lookSettings);
+        } catch(Exception error) { PendingPhotoStore.ACTIVE_CAPTURES.remove(job.id); finishJob(job,null,null,error); return; }
         Shot shot=new Shot(session,capture.getOutputFormat(),job,captureMetadata,characteristics);
         currentShot=shot;
         shot.timeout=() -> enqueueCapture(() -> deliver(shot,new IllegalStateException("Capture timed out")));
@@ -286,23 +304,17 @@ public final class MainActivity extends ComponentActivity {
                 try {
                     RawDeveloper.Input input=RawMetadata.input(image,shot.info,
                         shot.metadata.await(image.getImageInfo().getTimestamp()));
-                    // Disk-backed RAW snapshots avoid retaining several full sensor
-                    // buffers in the Java heap while the next exposure is acquired.
-                    shot.rawFile=java.io.File.createTempFile("capture_",".raw",getCacheDir());
-                    try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(shot.rawFile,"rw")) {
-                        java.nio.ByteBuffer bytes=input.bytes.duplicate();
-                        while(bytes.hasRemaining()) file.getChannel().write(bytes);
-                        input.bytes=file.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY,0,file.length());
-                    }
-                    shot.raw=input;
+                    PendingPhotoStore.writeRaw(getApplicationContext(),shot.job.id,input);
+                    shot.rawAvailable=true;
                 } catch(Throwable error) { shot.captureError=error; Log.w("CinemaCamera","RAW snapshot unavailable",error); }
             } else {
                 shot.jpegReceived=true;
-                try { shot.jpeg=PhotoBitmaps.snapshot(image); }
-                catch(Throwable error) { shot.captureError=error; }
+                try {
+                    PendingPhotoStore.writeJpeg(getApplicationContext(),shot.job.id,PhotoBitmaps.snapshot(image));
+                    shot.jpegAvailable=true;
+                } catch(Throwable error) { shot.captureError=error; }
             }
         } finally { image.close(); }
-        if(shot.cancelled) { cleanup(shot); return; }
         if((shot.format==ImageCapture.OUTPUT_FORMAT_RAW_JPEG&&shot.rawReceived&&shot.jpegReceived)
                 ||(shot.format==ImageCapture.OUTPUT_FORMAT_RAW&&shot.rawReceived)
                 ||(shot.format==ImageCapture.OUTPUT_FORMAT_JPEG&&shot.jpegReceived)) deliver(shot,shot.captureError);
@@ -315,7 +327,19 @@ public final class MainActivity extends ComponentActivity {
             shot.delivered=true;
         }
         main.removeCallbacks(shot.timeout);
-        boolean usable=shot.raw!=null||shot.jpeg!=null;
+        boolean usable=shot.rawAvailable||shot.jpegAvailable;
+        if(usable) {
+            try {
+                PendingPhotoStore.ready(getApplicationContext(),shot.job.id);
+                PendingPhotoStore.ACTIVE_CAPTURES.remove(shot.job.id);
+                SaveScheduler.schedule(getApplicationContext(),shot.job.id);
+            } catch(Exception error) {
+                // The source files remain even if journal/scheduler handoff fails.
+                PendingPhotoStore.error(getApplicationContext(),shot.job.id,error);
+                Log.e("CinemaCamera","Photo retained for scheduled recovery",error);
+            }
+        }
+        PendingPhotoStore.ACTIVE_CAPTURES.remove(shot.job.id);
         main.post(() -> {
             if(currentShot==shot) {
                 currentShot=null; captureQueue.complete(true);
@@ -324,35 +348,7 @@ public final class MainActivity extends ComponentActivity {
             else updateCaptureStatus();
             main.removeCallbacks(drainQueue); main.postDelayed(drainQueue,40);
         });
-        if(usable) processingExecutor.execute(() -> developAndSave(shot));
-        else cleanup(shot);
-    }
-
-    /** One worker owns its own offscreen EGL context, independent of live preview. */
-    private void developAndSave(Shot shot) {
-        Bitmap rendered=null,thumbnail=null;
-        try {
-            if(shot.raw!=null) {
-                try {
-                    LinearPhoto linear=RawDeveloper.develop(shot.raw,2560);
-                    shot.raw=null; deleteRawFile(shot);
-                    rendered=photoRenderer.render(linear,shot.job.lookSettings);
-                } catch(Throwable error) { Log.w("CinemaCamera","RAW development failed; use JPEG",error); }
-            }
-            if(rendered==null) {
-                if(shot.jpeg==null) throw new IllegalStateException("No usable JPEG fallback");
-                Bitmap jpeg=PhotoBitmaps.from(shot.jpeg,2560);
-                shot.jpeg=null;
-                rendered=photoRenderer.render(jpeg,shot.job.lookSettings);
-            }
-            Uri uri=PhotoStore.save(getContentResolver(),rendered,shot.job.capturedAt);
-            // A thumbnail failure must not turn a successfully saved photo into a retry.
-            try { thumbnail=android.media.ThumbnailUtils.extractThumbnail(rendered,128,128); }
-            catch(Throwable ignored) {}
-            Bitmap resultThumbnail=thumbnail;
-            main.post(() -> finishJob(shot.job,uri,resultThumbnail,null));
-        } catch(Throwable error) { main.post(() -> recoverJob(shot,error)); }
-        finally { if(rendered!=null&&rendered!=thumbnail) rendered.recycle(); cleanup(shot); }
+        SaveScheduler.changed(getApplicationContext());
     }
 
     private void recoverJob(Shot shot,Throwable reason) {
@@ -367,7 +363,11 @@ public final class MainActivity extends ComponentActivity {
 
     private void finishJob(PhotoJob job,Uri uri,Bitmap thumbnail,Throwable error) {
         if(job.done) { if(thumbnail!=null) thumbnail.recycle(); return; }
-        job.done=true; outstandingPhotos=Math.max(0,outstandingPhotos-1);
+        job.done=true; PendingPhotoStore.ACTIVE_CAPTURES.remove(job.id);
+        if(!PendingPhotoStore.hasInput(this,job.id)) {
+            try { PendingPhotoStore.remove(this,job.id); } catch(Exception ignored) {}
+        }
+        outstandingPhotos=PendingPhotoStore.count(this);
         if(uri!=null) completedPhotos++;
         if(isDestroyed()) { if(thumbnail!=null) thumbnail.recycle(); return; }
         if(thumbnail!=null) screen.thumbnail(thumbnail);
@@ -380,8 +380,10 @@ public final class MainActivity extends ComponentActivity {
 
     private void updateCaptureStatus() {
         if(!active||isDestroyed()) return;
+        outstandingPhotos=PendingPhotoStore.count(this);
         if(currentShot!=null) setStatus(currentShot.job.retrying?"JPEGで撮り直しています…":
             "撮影中"+(outstandingPhotos>1?" · 現像・保存待ち "+(outstandingPhotos-1)+"枚":"…"));
+        else if(outstandingPhotos>0&&PendingPhotoStore.waitingToRetry(this)) setStatus("未保存 "+outstandingPhotos+"枚 · データ保管済み／自動再試行待ち");
         else if(outstandingPhotos>0) setStatus("現像・保存中 "+outstandingPhotos+"枚"+
             (outstandingPhotos>=MAX_OUTSTANDING?" · 次の撮影は待機":" · 撮影できます"));
         else setStatus(completedPhotos>0?"保存しました":"");
@@ -389,24 +391,18 @@ public final class MainActivity extends ComponentActivity {
 
     private void cancelPendingCapture(Shot shot,Throwable error) {
         if(shot==null) return;
-        synchronized(shot) {
-            if(shot.delivered) return;
-            shot.cancelled=true;
-        }
-        main.removeCallbacks(shot.timeout); finishJob(shot.job,null,null,error);
-        enqueueCapture(() -> cleanup(shot));
+        // Keep any data already received, even if only one RAW/JPEG callback
+        // completed before leaving the camera. Never delete acquired originals.
+        enqueueCapture(() -> deliver(shot,error));
     }
 
-    private void deleteRawFile(Shot shot) {
-        if(shot.rawFile!=null) { shot.rawFile.delete(); shot.rawFile=null; }
-    }
-    private void cleanup(Shot shot) { shot.raw=null; shot.jpeg=null; deleteRawFile(shot); }
     private void enqueueCapture(Runnable action) {
         try { captureExecutor.execute(action); }
         catch(java.util.concurrent.RejectedExecutionException ignored) {}
     }
 
     private static final class PhotoJob {
+        final String id=java.util.UUID.randomUUID().toString();
         final boolean flash;
         final int rotation;
         final long capturedAt;
@@ -423,9 +419,7 @@ public final class MainActivity extends ComponentActivity {
         final CameraCharacteristics info;
         volatile boolean cancelled,delivered;
         boolean rawReceived,jpegReceived;
-        RawDeveloper.Input raw;
-        PhotoBitmaps.Encoded jpeg;
-        java.io.File rawFile;
+        boolean rawAvailable,jpegAvailable;
         Throwable captureError;
         Runnable timeout;
         Shot(int token,int format,PhotoJob job,CaptureMetadata metadata,CameraCharacteristics info) {
@@ -578,6 +572,13 @@ public final class MainActivity extends ComponentActivity {
             @Override public int exposureIndex() { return exposureIndex; }
             @Override public void exposureDrag(int startIndex,float deltaY) { adjustExposure(startIndex,deltaY); }
             @Override public void gallery() { openPhotoFolder(); }
+            @Override public void retrySaving() {
+                setStatus("未保存の写真を再試行します…");
+                processingExecutor.execute(() -> {
+                    PendingPhotoStore.recover(getApplicationContext());
+                    SaveScheduler.retryAll(getApplicationContext()); SaveScheduler.changed(getApplicationContext());
+                });
+            }
             @Override public void permission() {
                 if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) {
                     surface.startFrames(); startCamera();

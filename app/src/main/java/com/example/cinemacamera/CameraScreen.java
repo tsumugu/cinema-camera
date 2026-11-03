@@ -38,6 +38,7 @@ final class CameraScreen implements SensorEventListener {
         void exposureDrag(int startIndex,float deltaY);
         void permission();
         void gallery();
+        void retrySaving();
     }
     final LinearLayout root;
     final CameraOverlay overlay;
@@ -114,6 +115,7 @@ final class CameraScreen implements SensorEventListener {
         settingsButton.setOnClickListener(view -> {
             PopupMenu menu=new PopupMenu(context,settingsButton);
             menu.getMenu().add("フィルター調整").setOnMenuItemClickListener(item -> { showFilterSettings(); return true; });
+            menu.getMenu().add("未保存の写真を再試行").setOnMenuItemClickListener(item -> { actions.retrySaving(); return true; });
             menu.show();
         });
         for(Button button:new Button[]{flashButton,gridButton,levelButton,settingsButton})

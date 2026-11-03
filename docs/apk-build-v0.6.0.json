@@ -1,0 +1,13 @@
+{
+  "versionCode": 6,
+  "versionName": "0.6.0",
+  "minSdk": 29,
+  "targetSdk": 35,
+  "artifact": "cinema-camera-android15-v0.6.0-debug.apk",
+  "bytes": 3628491,
+  "sha256": "a639be7dc175b37a3e7045802b5dd7fb94535b82f9f889c87f58420233b36dc9",
+  "build": "offline SDK javac + D8 + AAPT2 + zipalign + apksigner",
+  "backgroundSave": "persistent JobScheduler with durable source journal and idempotent publication",
+  "testsRun": false,
+  "deviceVerified": false
+}

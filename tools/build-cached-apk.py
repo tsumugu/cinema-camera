@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Offline SDK build using dependencies/resources from the preceding Gradle build."""
 from pathlib import Path
-import os,subprocess,zipfile,shutil,re
+import os,subprocess,zipfile,shutil,re,copy
+import xml.etree.ElementTree as ET
 root=Path(__file__).resolve().parents[1]
 os.chdir(root)
 work=root/'build/cached-apk'
@@ -40,7 +41,27 @@ args=[java,'-cp',bt/'lib/d8.jar','com.android.tools.r8.D8','--debug','--min-api'
 for lib in libs: args+=['--classpath',lib]
 args += [appjar,rjar,*sorted((root/'app/build/intermediates/dex/debug/mergeExtDexDebug').glob('*.dex'))]
 run(args)
-manifest=(root/'app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/AndroidManifest.xml').read_text()
+# Reuse merged library declarations, then merge current application components
+# and permissions so new background services are included in offline builds.
+android_ns='http://schemas.android.com/apk/res/android'
+ET.register_namespace('android',android_ns)
+name_attr='{'+android_ns+'}name'
+manifest_tree=ET.parse(root/'app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/AndroidManifest.xml')
+manifest_root=manifest_tree.getroot()
+source=ET.parse(root/'app/src/main/AndroidManifest.xml').getroot()
+for permission in source.findall('uses-permission'):
+    if not any(p.get(name_attr)==permission.get(name_attr) for p in manifest_root.findall('uses-permission')):
+        manifest_root.insert(0,copy.deepcopy(permission))
+merged_app=manifest_root.find('application'); source_app=source.find('application')
+merged_app.attrib.update(source_app.attrib)
+package=manifest_root.get('package')
+def canonical(name):
+    return package+name if name and name.startswith('.') else name
+for component in source_app:
+    match=next((item for item in merged_app if item.tag==component.tag and canonical(item.get(name_attr))==canonical(component.get(name_attr))),None)
+    if match is None: merged_app.append(copy.deepcopy(component))
+    else: match.attrib.update(component.attrib)
+manifest=ET.tostring(manifest_root,encoding='unicode')
 gradle=(root/'app/build.gradle').read_text()
 version_code=re.search(r'versionCode\s+(\d+)',gradle).group(1)
 version_name=re.search(r"versionName\s+'([^']+)'",gradle).group(1)
